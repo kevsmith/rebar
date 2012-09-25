@@ -345,10 +345,22 @@ is_app_available(Config, App, VsnRegex, Path) ->
     end.
 
 use_source(Config, Dep) ->
-    {Retries, Dep1} = parse_retries(Dep),
+    %% Look for how often to retry failed dependcy fetches if
+    %% configured. Otherwise fallback to a default of 3
+    DefaultRetries = rebar_config:get(Config, erl_dep_retries, ?DEFAULT_RETRIES),
+    {Retries, Dep1} = parse_retries(Dep, DefaultRetries),
     use_source(Config, Dep1, Retries, Retries).
 
-use_source(_Config, Dep, 0, TotalTries) ->
+use_source(Config, Dep, 0, TotalTries) ->
+    {true, DepsDir} = get_deps_dir(Config),
+    %% Delete empty deps dir to avoid spurious error
+    %% on next rebar invocation
+    case rebar_file_utils:is_empty(DepsDir) of
+        true ->
+            rebar_file_utils:rm_rf(DepsDir);
+        false ->
+            ok
+    end,
     ?ABORT("Failed to acquire source from ~p after ~p tries.\n",
            [Dep#dep.source, TotalTries]);
 use_source(Config, Dep, Count, TotalTries) ->
@@ -377,8 +389,14 @@ use_source(Config, Dep, Count, TotalTries) ->
             case catch download_source(TargetDir, Dep#dep.source) of
                 rebar_abort ->
                     %% Wait a random interval before retrying
-                    timer:sleep(random:uniform(5000)),
-                    %% Delete dep dir so we can retry from scratch again
+                    %% But only wait if we have retries remaining
+                    case Count > 1 of
+                        true ->
+                            timer:sleep(random:uniform(5000));
+                        false ->
+                            ok
+                    end,
+                    %% Clean up after failed dependency fetch
                     rebar_file_utils:rm_rf(TargetDir);
                 _ ->
                     ok
@@ -549,14 +567,14 @@ format_source(App, {_, Url, Rev}) ->
 format_source(App, undefined) ->
     ?FMT("~p", [App]).
 
-parse_retries(#dep{source=DepSource0}=Dep) ->
+parse_retries(#dep{source=DepSource0}=Dep, Default) ->
     DepSource = erlang:tuple_to_list(DepSource0),
     %% We use keytake here so the retry tuple is removed
     %% so the vcs fetching logic doesn't blow up on an
     %% unexpected input
     case lists:keytake(retries, 1, DepSource) of
         false ->
-            {?DEFAULT_RETRIES, Dep};
+            {Default, Dep};
         {value, {retries, Retries}, DepSource1} ->
             {Retries, Dep#dep{source=erlang:list_to_tuple(DepSource1)}}
     end.
