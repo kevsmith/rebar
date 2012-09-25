@@ -44,6 +44,8 @@
                vsn_regex,
                source }).
 
+-define(DEFAULT_RETRIES, 3).
+
 %% ===================================================================
 %% Public API
 %% ===================================================================
@@ -343,12 +345,13 @@ is_app_available(Config, App, VsnRegex, Path) ->
     end.
 
 use_source(Config, Dep) ->
-    use_source(Config, Dep, 3).
+    {Retries, Dep1} = parse_retries(Dep),
+    use_source(Config, Dep1, Retries, Retries).
 
-use_source(_Config, Dep, 0) ->
-    ?ABORT("Failed to acquire source from ~p after 3 tries.\n",
-           [Dep#dep.source]);
-use_source(Config, Dep, Count) ->
+use_source(_Config, Dep, 0, TotalTries) ->
+    ?ABORT("Failed to acquire source from ~p after ~p tries.\n",
+           [Dep#dep.source, TotalTries]);
+use_source(Config, Dep, Count, TotalTries) ->
     case filelib:is_dir(Dep#dep.dir) of
         true ->
             %% Already downloaded -- verify the versioning matches the regex
@@ -371,8 +374,16 @@ use_source(Config, Dep, Count) ->
             ?CONSOLE("Pulling ~p from ~p\n", [Dep#dep.app, Dep#dep.source]),
             require_source_engine(Dep#dep.source),
             {true, TargetDir} = get_deps_dir(Config, Dep#dep.app),
-            download_source(TargetDir, Dep#dep.source),
-            use_source(Config, Dep#dep { dir = TargetDir }, Count-1)
+            case catch download_source(TargetDir, Dep#dep.source) of
+                rebar_abort ->
+                    %% Wait a random interval before retrying
+                    timer:sleep(random:uniform(5000)),
+                    %% Delete dep dir so we can retry from scratch again
+                    rebar_file_utils:rm_rf(TargetDir);
+                _ ->
+                    ok
+            end,
+            use_source(Config, Dep#dep { dir = TargetDir }, Count-1, TotalTries)
     end.
 
 download_source(AppDir, {hg, Url, Rev}) ->
@@ -537,3 +548,15 @@ format_source(App, {_, Url, Rev}) ->
     ?FMT("~p REV ~s ~s", [App, Rev, Url]);
 format_source(App, undefined) ->
     ?FMT("~p", [App]).
+
+parse_retries(#dep{source=DepSource0}=Dep) ->
+    DepSource = erlang:tuple_to_list(DepSource0),
+    %% We use keytake here so the retry tuple is removed
+    %% so the vcs fetching logic doesn't blow up on an
+    %% unexpected input
+    case lists:keytake(retries, 1, DepSource) of
+        false ->
+            {?DEFAULT_RETRIES, Dep};
+        {value, {retries, Retries}, DepSource1} ->
+            {Retries, Dep#dep{source=erlang:list_to_tuple(DepSource1)}}
+    end.
