@@ -26,7 +26,8 @@
 %% -------------------------------------------------------------------
 -module(rebar_file_utils).
 
--export([rm_rf/1,
+-export([is_empty/1,
+         rm_rf/1,
          cp_r/2,
          mv/2,
          delete_each/1,
@@ -37,6 +38,24 @@
 %% ===================================================================
 %% Public API
 %% ===================================================================
+
+%% @doc Determines if a directory is empty
+%%      Will scan all the files contained in the target directory
+%%      so calling this function on large directories could be
+%%      expensive
+-spec is_empty(string()) -> boolean().
+is_empty(Target) ->
+    case filelib:is_dir(Target) of
+        false ->
+            error(badarg);
+        true ->
+            case filelib:wildcard("*", Target) of
+                [] ->
+                    true;
+                _ ->
+                    false
+            end
+    end.
 
 %% @doc Remove files and directories.
 %% Target is a single filename, directoryname or wildcard expression.
